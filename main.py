@@ -6,13 +6,14 @@ from fastapi import FastAPI, Depends, HTTPException, Form, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel, EmailStr
-from sqlalchemy import create_engine, Column, String, Integer, Boolean, DateTime
-from sqlalchemy.ext.declarative import declarative_base
+from pydantic import BaseModel, EmailStr, field_validator
+from sqlalchemy import create_engine, Column, String, Integer, Boolean, DateTime, Text
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 
 from email.mime.text import MIMEText
 import aiosmtplib
+import base64
 
 # Konfiguracja aplikacji FastAPI
 app = FastAPI()
@@ -23,8 +24,7 @@ ALGORITHM = "HS256"  # Algorytm podpisu JWT
 TOKEN_EXPIRE_MINUTES = 30
 
 # Konfiguracja bazy danych
-# DATABASE_URL = "mssql+pyodbc://sa:SportsApp123!@sql_edge:1433/SportsApp_db?driver=ODBC+Driver+17+for+SQL+Server"
-DATABASE_URL = "mssql+pyodbc://sa:SportsApp123!@localhost:1433/SportsApp_db?driver=ODBC+Driver+17+for+SQL+Server"
+DATABASE_URL = "mssql+pyodbc://sa:SportsApp123!@sql_edge:1433/SportsApp_db?driver=ODBC+Driver+17+for+SQL+Server"
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -47,8 +47,69 @@ class User(Base):
     is_first_login = Column(Boolean, default=True)  # Czy pierwsze logowanie
 
 
+class Application(Base):
+    __tablename__ = "applications"
+    id = Column(Integer, primary_key=True, index=True)
+    first_name = Column(String(255), nullable=False)
+    last_name = Column(String(255), nullable=False)
+    firm = Column(String(255), nullable=True)
+    description = Column(String, nullable=True)
+    title = Column(String(255), nullable=False)
+    event_date_from = Column(DateTime, nullable=False)
+    event_date_to = Column(DateTime, nullable=False)
+    photo = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Announcement(Base):
+    __tablename__ = "announcements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=False)
+    firm = Column(String(255), nullable=True)
+    date_from = Column(DateTime, nullable=False)
+    date_to = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # Tworzenie tabel (migracja)
 Base.metadata.create_all(bind=engine)
+
+
+class ApplicationCreate(BaseModel):
+    first_name: str
+    last_name: str
+    firm: str | None = None
+    description: str | None = None
+    title: str
+    event_date_from: datetime
+    event_date_to: datetime
+    photo: str
+
+    @field_validator("photo")
+    def validate_photo(cls, value):
+        try:
+            base64.b64decode(value)
+        except Exception:
+            raise ValueError("Invalid Base64 string")
+        return value
+
+
+class AnnouncementCreate(BaseModel):
+    title: str
+    description: str
+    firm: str | None = None
+    date_from: datetime
+    date_to: datetime
+
+
+class AnnouncementUpdate(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    firm: str | None = None
+    date_from: datetime | None = None
+    date_to: datetime | None = None
 
 
 # Pomoce dla uwierzytelniania
@@ -261,6 +322,86 @@ async def approve_user(user_id: int, db: Session = Depends(get_db)):
     )
 
     return {"message": f"User {user.username} has been approved and notified by email."}
+
+
+@app.post("/applications/", response_model=dict)
+def create_application(application: ApplicationCreate, db: Session = Depends(get_db)):
+    new_application = Application(
+        first_name=application.first_name,
+        last_name=application.last_name,
+        firm=application.firm,
+        description=application.description,
+        title=application.title,
+        event_date_from=application.event_date_from,
+        event_date_to=application.event_date_to,
+        photo=application.photo,
+        created_at=datetime.utcnow()
+    )
+    db.add(new_application)
+    db.commit()
+    db.refresh(new_application)
+
+    return {
+        "message": "Application created successfully",
+        "application_id": new_application.id
+    }
+
+
+@app.post("/announcements-create/", response_model=dict)
+def create_announcement(
+    announcement: AnnouncementCreate, db: Session = Depends(get_db)
+):
+    new_announcement = Announcement(
+        title=announcement.title,
+        description=announcement.description,
+        firm=announcement.firm,
+        date_from=announcement.date_from,
+        date_to=announcement.date_to,
+        created_at=datetime.utcnow()
+    )
+    db.add(new_announcement)
+    db.commit()
+    db.refresh(new_announcement)
+    return {"message": "Announcement created successfully", "id": new_announcement.id}
+
+
+@app.put("/announcements-update/{announcement_id}/", response_model=dict)
+def update_announcement(
+    announcement_id: int,
+    update_data: AnnouncementUpdate,
+    db: Session = Depends(get_db)
+):
+    announcement = db.query(Announcement).filter(Announcement.id == announcement_id).first()
+    if not announcement:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+
+    if update_data.title is not None:
+        announcement.title = update_data.title
+    if update_data.description is not None:
+        announcement.description = update_data.description
+    if update_data.firm is not None:
+        announcement.firm = update_data.firm
+    if update_data.date_from is not None:
+        announcement.date_from = update_data.date_from
+    if update_data.date_to is not None:
+        announcement.date_to = update_data.date_to
+
+    db.commit()
+    db.refresh(announcement)
+    return {"message": "Announcement updated successfully"}
+
+
+@app.delete("/announcements-delete/{announcement_id}/", response_model=dict)
+def delete_announcement(announcement_id: int, db: Session = Depends(get_db)):
+    announcement = db.query(Announcement).filter(Announcement.id == announcement_id).first()
+    if not announcement:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+
+    db.delete(announcement)
+    db.commit()
+    return {"message": "Announcement deleted successfully"}
+
+
 
 
 
