@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  sql_edge:
+    image: mcr.microsoft.com/azure-sql-edge
+    container_name: sql_edge
+    ports:
+      - "1433:1433" # Mapowanie portu SQL Server
+    environment:
+      ACCEPT_EULA: "1" # Akceptacja licencji
+      MSSQL_SA_PASSWORD: "SportsApp123!" # Hasło administratora (SA)
+    restart: always # Automatyczny restart kontenera w przypadku awarii
+
+  app:
+    build:
+      context: . # Budowanie obrazu z Dockerfile w katalogu głównym
+    container_name: sports_app
+    ports:
+      - "8000:8000" # Mapowanie portu aplikacji FastAPI
+    environment:
+      - DATABASE_URL=mssql+pyodbc://sa:SportsApp123!@localhost:1433/SportsApp_db?driver=ODBC+Driver+17+for+SQL+Server
+#      - DATABASE_URL=mssql+pyodbc://sa:SportsApp123!@sql_edge:1433/SportsApp_db?driver=ODBC+Driver+17+for+SQL+Server
+    depends_on:
+      - sql_edge
+    command: >
+      sh -c "
+      alembic upgrade head &&
+      uvicorn main:app --host 0.0.0.0 --port 8000
+      "
